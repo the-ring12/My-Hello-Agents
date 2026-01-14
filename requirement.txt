@@ -1,0 +1,4 @@
+langgrapg>=1.0.6
+langchain-openai>=1.1.7
+python-dotenv>=1.2.1
+tavily>=1.1.0
