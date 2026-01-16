@@ -90,7 +90,7 @@ class ToolChainManager:
         self.chains[chain.name] = chain
         print(f"✅ 工具链 '{chain.name}' 已注册")
     
-    def execute_chain(self, chain_name: str, input_data: str, context Dict[str, Any] = None) -> str:
+    def execute_chain(self, chain_name: str, input_data: str, context: Dict[str, Any] = None) -> str:
         """执行指定工具链"""
         if chain_name not in self.chains:
             return f"❌ 工具链 '{chain_name}' 不存在"
@@ -128,13 +128,13 @@ class ToolChainManager:
 def create_research_chain() -> ToolChain:
     """创建一个研究工具链：搜索 -> 计算 -> 总结"""
     chain = ToolChain(
-        name="research_and_calculate"，
+        name="research_and_calculate",
         description="搜索信息并进行相关计算"
     )
 
     # 步骤1：搜索信息
     chain.add_step(
-        tool_name="search"，
+        tool_name="search",
         input_template="{input}",
         output_key="search_result"
     )
