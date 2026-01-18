@@ -220,4 +220,176 @@ class SimpleAgent(Agent):
         if tool_name == 'memory':
             if 'recall' in param_dict:
                 param_dict['action'] = 'search'
-                # TODO
+                param_dict['query'] = param_dict.pop('recall')
+            elif 'store' in param_dict:
+                param_dict['action'] = 'add'
+                param_dict['content'] = param_dict.pop('store')
+            elif 'query' in param_dict:
+                param_dict['action'] = 'search'
+            elif 'content' in param_dict:
+                param_dict['action'] = 'add'
+        elif tool_name == 'rag': 
+            if 'search' in param_dict:
+                param_dict['action'] = 'search'
+                param_dict['query'] = param_dict.pop('search')
+            elif 'query' in param_dict:
+                param_dict['action'] = 'search'
+            elif 'text' in param_dict:
+                param_dict['action'] = 'add_text'
+
+        return param_dict
+    
+    def _infer_simple_parameters(self, tool_name: str, parameters: str) -> dict:
+        """为简单参数推断完整的参数字典"""
+        if tool_name == 'rag':
+            return {'action': 'search', 'query': parameters}
+        elif tool_name == 'memory':
+            return {'action': 'search', 'query': parameters}
+        else:
+            return {'input': parameters}
+        
+    def run(self, input_text: str, max_tool_iterations: int = 3, **kwargs) -> str:
+        """
+        运行 SimpleAgent，支持可选的工具调用
+
+        Args:
+            input_text: 用户输入
+            max_tool_iterations: 最大工具调用迭代次数（仅在启用工具时有效）
+            **kwargs: 其他参数
+        
+        Returns:
+            Agent 响应
+        """
+        # 构建消息列表
+        messages = []
+
+        # 添加系统消息（可能包含工具信息）
+        enhanced_system_prompt = self._get_enhanced_system_prompt()
+        messages.append({"role": "system", "content": enhanced_system_prompt})
+
+        # 添加历史消息
+        for msg in self._history:
+            messages.append({"role": msg.role, "content": msg.content})
+        
+        # 添加当前用户消息
+        messages.append({"role": "user", "content": input_text})
+
+        # 如果没有启用工具调用，使用原有逻辑
+        if not self.enable_tool_calling:
+            response = self.llm.invoke(messages, **kwargs)
+            self.add_message(Message(input_text, "user"))
+            self.add_message(Message(response, "assistant"))
+            return response
+        
+        # 迭代处理，支持多轮工具调用
+        current_iteration = 0
+        final_response = ""
+
+        while current_iteration < max_tool_iterations:
+            # 调用 LLM
+            response = self.llm.invoke(messages, **kwargs)
+
+            # 检查是否有工具调用
+            tool_calls = self._parse_tool_call(response)
+
+            if tool_calls:
+                # 执行工具调用并收集结果
+                tool_results = []
+                clean_response = response
+
+                for call in tool_calls:
+                    result = self._execute_tool_call(call['tool_name'], call['parameters'])
+                    tool_results.append(result)
+                    # 从响应中以移除工具调用标记
+                    clean_response = clean_response.replace(call['original'], "")
+
+                # 构建包含工具结果的消息
+                messages.append({"role": "assistant", "content": clean_response})
+
+                # 添加工具结果
+                tool_results_text = "\n\n".join(tool_results)
+                messages.append({"role": "user", "content": f"工具执行结果：\n{tool_results_text}\n\n请基于这些结果给出完整的回答。"})
+
+                current_iteration += 1
+                continue
+
+            # 没有工具调用
+            final_response = response
+            break
+
+        # 如果超过最大迭代次数，获取最后一次回答
+        if current_iteration >= max_tool_iterations and not final_response:
+            final_response = self.llm.invoke(messages, **kwargs)
+
+        # 保存到历史记录
+        self.add_message(Message(input_text, "user"))
+        self.add_message(Message(final_response, "assistant"))
+
+        return final_response
+    
+    def add_tool(self, tool, auto_expand: bool = True) -> None:
+        """
+        添加工具到 Agent（便利方法）
+
+        Args:
+            tool: Tool 对象
+            auto_expand: 是否自动展开可展开工具（默认为 True）
+
+        如果工具是可展开（expandable=True），会自动展开为多个独立工具
+        """
+        if not self.tool_registry:
+            from ..tools.registry import ToolRegistry
+            self.tool_registry = ToolRegistry()
+            self.enable_tool_calling = True
+        
+        # 直接使用 ToolRegistry 的 register_tool 方法
+        # ToolRegistry 会自动处理工具展开
+        self.tool_registry.register_tool(tool, auto_expand=auto_expand)
+
+    def remove_tool(self, tool_name: str) -> bool:
+        """移除工具（便利方法）"""
+        if self.tool_registry:
+            return self.tool_registry.unregister(tool_name)
+        return False
+    
+    def list_tools(self) -> list:
+        """列出所有可用工具"""
+        if self.tool_registry:
+            return self.tool_registry.list_tools()
+        return []
+    
+    def has_tools(self) -> bool:
+        """检查是否有可用工具"""
+        return self.enable_tool_calling and self.tool_registry is not None
+    
+    def stream_run(self, input_text: str, **kwargs) -> Iterator[str]:
+        """
+        流式运行 Agent
+
+        Args:
+            input_text: 用户输入
+            **kwargs: 其他参数
+
+        Yield:
+            Agent 响应片段
+        """
+        # 构建消息列表
+        messages = []
+
+        if self.system_prompt:
+            messages.append({"tole": "system", "content": self.system_prompt})
+
+        for msg in self._history:
+            messages.append({"role": msg.role, "content": msg.content})
+        
+        messages.append({"role": "user", "content": input_text})
+
+        # 流式调用 LLM
+        full_response = ""
+        for chunk in self.llm.stream_invoke(messages, **kwargs):
+            full_response += chunk
+            yield chunk
+        
+        # 保存完整对话到历史记录
+        self.add_message(Message(input_text, "user"))
+        self.add_message(Message(full_response, "assistant"))
